@@ -7,12 +7,15 @@ import (
 	"io"
 	"log"
 	"net"
+	"syscall"
 	"time"
 )
 
 type Server interface {
 	Run()
 }
+
+type UDPServer struct{}
 
 type TCPServer struct {
 	Port     string
@@ -42,10 +45,10 @@ func (tr *tcpReader) Read(p []byte) (n int, err error) {
 	return
 }
 
-func (tr *tcpReader) readConnection(byteChan chan []byte, errChan chan error) {
+func (tr *tcpReader) readConnection(reqChan chan []byte, errChan chan error) {
 	scanner := bufio.NewScanner(tr)
 	for scanner.Scan() {
-		byteChan <- scanner.Bytes()
+		reqChan <- scanner.Bytes()
 	}
 	if err := scanner.Err(); err != nil {
 		errChan <- err
@@ -55,36 +58,44 @@ func (tr *tcpReader) readConnection(byteChan chan []byte, errChan chan error) {
 	errChan <- io.EOF
 }
 
-func (server *TCPServer) processRequest(data []byte) {
-	var req string
+func (srv *TCPServer) sendResponse(status int, req string) {
+	// Use with valid connection
+	if _, err := fmt.Fprint(srv.tempConn, status); err != nil {
+		log.Println("Error sending response")
+	}
+	log.Println("Response status", status, "sent for request:", req)
+}
+
+func (srv *TCPServer) processRequest(req []byte) {
+	reqString := string(req)
+	var reqType string
 	var timestamp, val int
 
-	parsed, err := fmt.Sscanf(string(data), "%s %d:%d", &req, &timestamp, &val)
-	if parsed < 3 || err != nil {
-		if _, err := fmt.Fprint(server.tempConn, 400); err != nil {
-			log.Println("Error sending response")
-		}
+	parsed, err := fmt.Sscanf(reqString, "%s %d:%d", &reqType, &timestamp, &val)
+	if parsed < 3 || err != nil || reqType != "TEMP" {
+		go srv.sendResponse(400, reqString)
 		return
 	}
 
-	if _, err := fmt.Fprint(server.tempConn, 200); err != nil {
-		log.Println("Error sending response")
-	}
+	go srv.sendResponse(200, reqString)
 
-	server.buffer = append(server.buffer, fmt.Sprintf("%d:%d", timestamp, val))
+	log.Println("Request:", reqString)
 
-	if len(server.buffer) == 10 {
+	// Critical
+	srv.buffer = append(srv.buffer, string(req)[5:])
+	if len(srv.buffer) == 10 {
 		// TODO: Send the buffer to the server
-		log.Println(server.buffer)
-		clear(server.buffer)
+		log.Println(srv.buffer)
+		// Clear the slice, keep the allocated memory
+		srv.buffer = srv.buffer[:0]
 	}
 }
 
-func (server *TCPServer) Run() {
+func (srv *TCPServer) Run() {
 	// Broadcast port
-	ln, err := net.Listen("tcp", server.Port)
+	ln, err := net.Listen("tcp", srv.Port)
 	if err != nil {
-		log.Fatal("Failed to create TCP listener: ", err)
+		log.Fatal("Failed to create TCP listener:", err)
 	}
 
 	// Close the listener
@@ -92,38 +103,40 @@ func (server *TCPServer) Run() {
 
 	// Accept connection attempts
 	// Note: TCP Server accepts a single active connection
-	for server.tempConn == nil {
-		server.tempConn, err = ln.Accept()
+	for srv.tempConn == nil {
+		srv.tempConn, err = ln.Accept()
 		if err != nil {
-			log.Println("Failed to connect to the client: ", err)
+			log.Println("Failed to connect to the client:", err)
 		}
 
-		tr := &tcpReader{Conn: server.tempConn}
+		tr := &tcpReader{Conn: srv.tempConn}
 
-		byteChan := make(chan []byte)
+		reqChan := make(chan []byte)
 		errChan := make(chan error)
 
-		go tr.readConnection(byteChan, errChan)
+		go tr.readConnection(reqChan, errChan)
 
-		for server.tempConn != nil {
+		for srv.tempConn != nil {
 			select {
 			// Received request successfully
-			case data := <-byteChan:
-				server.processRequest(data)
+			case req := <-reqChan:
+				srv.processRequest(req)
 			case err := <-errChan:
-				// TODO: Notify the server that TEMP Sensor down
-				// Check if the client timed out
-				if errors.Is(err, io.EOF) {
-					log.Println("Client timed out, closing connection")
+				// TODO: Notify the server that the TEMP Sensor down
+				// Check if the client timed out or connection resetted
+				if errors.Is(err, io.EOF) || errors.Is(err, syscall.ECONNRESET) {
+					log.Println("Connection reset")
 					// Closing the connection
-					if err = server.tempConn.Close(); err != nil {
+					if err = srv.tempConn.Close(); err != nil {
 						log.Fatal(err)
 					}
 					// Set the connection to nil so can server accept a new connection
-					server.tempConn = nil
+					srv.tempConn = nil
 				} else {
+					// Possible unrecoverable error
 					// TODO: might send status 500
 					log.Println(err)
+					// Shuts down the business
 					return
 				}
 			}
