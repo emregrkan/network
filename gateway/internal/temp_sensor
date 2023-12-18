@@ -1,0 +1,44 @@
+import socket
+import time
+import random
+
+HOST = "localhost"  
+PORT = 8367  #  gateway
+
+def send_handshake_request(s):
+    request_msg = "REQUEST_TEMPERATURE"
+    s.sendall(request_msg.encode())
+    response_code = int(s.recv(1024).decode())
+    
+    if response_code == 200:
+        print("Handshake successful.")
+    else:
+        print(f"Handshake failed with status code {response_code}.")
+
+    return response_code
+
+def send_temperature_data(s):
+    try:
+        with s:
+            response_code = send_handshake_request(s)
+
+            if response_code == 200:
+                while True:
+                    temperature = random.uniform(20, 30)
+                    timestamp = int(time.time())
+                    msg = f"TEMP {timestamp}:{temperature}\r\n"
+                    s.sendall(msg.encode())
+                    time.sleep(1)
+            else:
+                print(f"Bad response from the gateway. Handshake failed with status code {response_code}.")
+
+    except Exception as e:
+        print(f"Internal server error: {e}")
+
+if __name__ == "__main__":
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.connect((HOST, PORT))
+            send_temperature_data(s)
+    except Exception as e:
+        print(f"Error connecting to the gateway: {e}")
