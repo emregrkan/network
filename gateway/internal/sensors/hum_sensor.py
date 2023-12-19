@@ -12,14 +12,15 @@ def humidity_sensor():
         humidity_value = random.randint(40, 90)
         # Send information if humidity exceeds 80
         if humidity_value > 80:
-            message = f"{humidity_value}"
+            message = f"{humidity_value}\r\n"
             sock.sendto(message.encode(), (udp_host, udp_port))
             print(f"Sent --> Humidity: {message}")
 
         # Send 'ALIVE' message every 3 seconds
         time.sleep(1)
-        if time.time() % 3 == 0:
-            alive_message = "ALIVE"
+        timestamp = int(time.time())
+        if timestamp % 3 == 0:
+            alive_message = "ALIVE\r\n"
             sock.sendto(alive_message.encode(), (udp_host, udp_port))
             print(f"Sent: {alive_message}")
 
