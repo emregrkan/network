@@ -20,9 +20,11 @@ type UDPServer struct {
 	// To process and send response to the client
 	sensAddr   net.Addr
 	packetConn net.PacketConn
+	timer      *time.Timer
+	buffer     []string
 }
 
-type udpReq struct {
+type udpPacket struct {
 	net.Addr
 	Len  int
 	Body []byte
@@ -34,6 +36,8 @@ type TCPServer struct {
 	buffer   []string
 	// server connection
 }
+
+type tcpPacket []byte
 
 type tcpReader struct {
 	net.Conn
@@ -56,10 +60,10 @@ func (tr *tcpReader) Read(p []byte) (n int, err error) {
 	return
 }
 
-func (tr *tcpReader) readConnection(reqChan chan []byte, errChan chan error) {
+func (tr *tcpReader) readConnection(packetChan chan tcpPacket, errChan chan error) {
 	scanner := bufio.NewScanner(tr)
 	for scanner.Scan() {
-		reqChan <- scanner.Bytes()
+		packetChan <- scanner.Bytes()
 	}
 	if err := scanner.Err(); err != nil {
 		errChan <- err
@@ -71,35 +75,33 @@ func (tr *tcpReader) readConnection(reqChan chan []byte, errChan chan error) {
 
 func (srv *TCPServer) sendResponse(status int, req string) {
 	// Use with valid connection
-	if _, err := fmt.Fprint(srv.sensConn, status); err != nil {
+	if _, err := fmt.Fprintln(srv.sensConn, status); err != nil {
 		log.Println("Error sending response")
 	}
 	log.Println("Response status", status, "sent for request:", req)
 }
 
-func (srv *TCPServer) processRequest(req []byte) {
-	reqString := string(req)
+func (srv *TCPServer) processPacket(packet tcpPacket) {
+	req := string(packet)
 	var reqType string
 	var timestamp, val int
 
-	parsed, err := fmt.Sscanf(reqString, "%s %d:%d", &reqType, &timestamp, &val)
+	parsed, err := fmt.Sscanf(req, "%s %d:%d", &reqType, &timestamp, &val)
 	if parsed < 3 || err != nil || reqType != "TEMP" {
-		go srv.sendResponse(400, reqString)
+		srv.sendResponse(400, req)
 		return
 	}
 
-	go srv.sendResponse(200, reqString)
-
-	log.Println("Request:", reqString)
-
 	// Critical
-	srv.buffer = append(srv.buffer, string(req)[5:])
+	srv.buffer = append(srv.buffer, req[5:])
 	if len(srv.buffer) == 10 {
 		// TODO: Send the buffer to the server
 		log.Println(srv.buffer)
 		// Clear the slice, keep the allocated memory
 		srv.buffer = srv.buffer[:0]
 	}
+
+	srv.sendResponse(200, req)
 }
 
 func (srv *TCPServer) Run() {
@@ -117,6 +119,9 @@ func (srv *TCPServer) Run() {
 		}
 	}()
 
+	packetChan := make(chan tcpPacket)
+	errChan := make(chan error)
+
 	// Accept connection attempts
 	// Note: TCP Server accepts a single active connection
 	for srv.sensConn == nil {
@@ -127,16 +132,15 @@ func (srv *TCPServer) Run() {
 
 		tr := &tcpReader{Conn: srv.sensConn}
 
-		reqChan := make(chan []byte)
-		errChan := make(chan error)
-
-		go tr.readConnection(reqChan, errChan)
+		go tr.readConnection(packetChan, errChan)
 
 		for srv.sensConn != nil {
 			select {
-			// Received request successfully
-			case req := <-reqChan:
-				srv.processRequest(req)
+			// Received a packet successfully
+			case packet := <-packetChan:
+				// Should be faster than 1s
+				log.Println("Received a TCP packet:", string(packet))
+				srv.processPacket(packet)
 			case err := <-errChan:
 				// TODO: Notify the server that the TEMP Sensor down
 				// Check if the client timed out or connection resetted
@@ -160,7 +164,7 @@ func (srv *TCPServer) Run() {
 	}
 }
 
-func (srv *UDPServer) listenRequests(reqChan chan *udpReq, errChan chan error) {
+func (srv *UDPServer) receivePackets(packetChan chan *udpPacket, errChan chan error) {
 	// Keep accepting packets as long as there is a client (sensor)
 	for srv.packetConn != nil {
 		// 128 byte long packets should be enough
@@ -173,7 +177,14 @@ func (srv *UDPServer) listenRequests(reqChan chan *udpReq, errChan chan error) {
 		}
 		// Len is to get rid of NULLs
 		// I'm not exactly sure about n-1 is the best way to get rid of LF
-		reqChan <- &udpReq{Addr: addr, Len: n - 1, Body: buff}
+		packetChan <- &udpPacket{Addr: addr, Len: n - 1, Body: buff}
+	}
+}
+
+func (srv *UDPServer) processPacket(packet *udpPacket) {
+	if string(packet.Body[:packet.Len]) == "ALIVE" {
+		log.Println("Resetting timer")
+		srv.timer.Reset(7 * time.Second)
 	}
 }
 
@@ -188,44 +199,40 @@ func (srv *UDPServer) Run() {
 	// Close UDP server
 	defer func() {
 		srv.packetConn.Close()
-		// To terminate `listenRequests` goroutine
+		// To terminate `receivePackets` goroutine
 		srv.packetConn = nil
 	}()
 
 	// Client is nil when there is no sensor
 	srv.sensAddr = nil
 
-	reqChan := make(chan *udpReq)
+	packetChan := make(chan *udpPacket)
 	errChan := make(chan error)
 
-	go srv.listenRequests(reqChan, errChan)
+	go srv.receivePackets(packetChan, errChan)
 
 	// I'm not very happy about this
-	timer := time.NewTimer(0)
-	defer timer.Stop()
+	srv.timer = time.NewTimer(0)
+	defer srv.timer.Stop()
 
 	for {
 		select {
 		// Received a request
-		case req := <-reqChan:
+		case packet := <-packetChan:
 			// Initial request set up
 			if srv.sensAddr == nil {
-				srv.sensAddr = req.Addr
+				srv.sensAddr = packet.Addr
 				// Timer starts here
-				timer.Reset(7 * time.Second)
+				srv.timer.Reset(7 * time.Second)
 			}
-			reqStr := string(req.Body[:req.Len])
-			if reqStr == "ALIVE" {
-				// `ALIVE` message received reset the timer
-				timer.Reset(7 * time.Second)
-			}
-			log.Println(reqStr)
+			log.Println("Received a UDP packet:", string(packet.Body[:packet.Len]))
+			srv.processPacket(packet)
 		// An error occured during processing request
 		case err := <-errChan:
 			log.Println(err)
 			return
 		// Possible (almost certain) time out
-		case <-timer.C:
+		case <-srv.timer.C:
 			// I don't know if this check is necessary
 			if srv.sensAddr != nil {
 				log.Println("Humidty sensor down")
