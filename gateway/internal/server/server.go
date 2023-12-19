@@ -177,7 +177,7 @@ func (srv *UDPServer) receivePackets(packetChan chan *udpPacket, errChan chan er
 		}
 		// Len is to get rid of NULLs
 		// I'm not exactly sure about n-1 is the best way to get rid of LF
-		packetChan <- &udpPacket{Addr: addr, Len: n - 1, Body: buff}
+		packetChan <- &udpPacket{Addr: addr, Len: n - 2, Body: buff}
 	}
 }
 
@@ -188,6 +188,7 @@ func (srv *UDPServer) processPacket(packet *udpPacket) {
 	}
 }
 
+// TODO: add handshake
 func (srv *UDPServer) Run() {
 	var err error
 	// Listen UDP packets
