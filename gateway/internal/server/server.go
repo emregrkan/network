@@ -176,7 +176,7 @@ func (srv *UDPServer) receivePackets(packetChan chan *udpPacket, errChan chan er
 			continue
 		}
 		// Len is to get rid of NULLs
-		// I'm not exactly sure about n-1 is the best way to get rid of LF
+		// I'm not exactly sure about n-2 is the best way to get rid of LF
 		packetChan <- &udpPacket{Addr: addr, Len: n - 2, Body: buff}
 	}
 }
@@ -221,7 +221,24 @@ func (srv *UDPServer) Run() {
 		// Received a request
 		case packet := <-packetChan:
 			// Initial request set up
+			// Handshake
 			if srv.sensAddr == nil {
+				if req := string(packet.Body[:packet.Len]); req != "REQUEST TRANSMISSION" {
+					log.Printf("Expected handshake, got: %s. Sending response status 400", req)
+					_, err := srv.packetConn.WriteTo([]byte("400\r\n"), packet.Addr)
+					if err != nil {
+						log.Println("Failed to send response status 400")
+					}
+					continue
+				}
+
+				log.Println("Handshake successful, sending response status 200")
+				_, err := srv.packetConn.WriteTo([]byte("200\r\n"), packet.Addr)
+				if err != nil {
+					log.Println("Failedto send response status 200")
+				}
+
+				// Assign sensor address to server
 				srv.sensAddr = packet.Addr
 				// Timer starts here
 				srv.timer.Reset(7 * time.Second)
