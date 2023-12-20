@@ -43,9 +43,9 @@ def send_humidity_data(sock):
 
                     # Send information if humidity exceeds 80
                     if humidity_value > 80:
-                        message = f"{humidity_value}\r\n"
+                        message = f"HUMID {humidity_value}\r\n"
                         sock.sendto(message.encode(), (UDP_HOST, UDP_PORT))
-                        print(f"Sent --> Humidity:{message}")
+                        print(f"Sent --> {message}")
 
                     # Send 'ALIVE' message every 3 seconds
                     time.sleep(1)

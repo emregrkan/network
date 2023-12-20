@@ -168,7 +168,7 @@ func (srv *UDPServer) receivePackets(packetChan chan *udpPacket, errChan chan er
 	// Keep accepting packets as long as there is a client (sensor)
 	for srv.packetConn != nil {
 		// 128 byte long packets should be enough
-		buff := make([]byte, 128)
+		buff := make([]byte, 512)
 		n, addr, err := srv.packetConn.ReadFrom(buff)
 		if n == 0 || err != nil {
 			errChan <- err
@@ -182,13 +182,52 @@ func (srv *UDPServer) receivePackets(packetChan chan *udpPacket, errChan chan er
 }
 
 func (srv *UDPServer) processPacket(packet *udpPacket) {
-	if string(packet.Body[:packet.Len]) == "ALIVE" {
+	req := string(packet.Body[:packet.Len])
+	// Set up server or continue
+	if srv.sensAddr == nil || req == "REQUEST TRANSMISSION" {
+		// I don't know
+		// srv.timer.Reset(0)
+
+		// Handshake check
+		if req != "REQUEST TRANSMISSION" {
+			log.Printf("Expected handshake, got: %s. Sending response status 400", req)
+			_, err := srv.packetConn.WriteTo([]byte("400\r\n"), packet.Addr)
+			if err != nil {
+				log.Println("Failed to send response status 400")
+			}
+			return
+		}
+
+		// Successful handshake
+		log.Println("Handshake successful, sending response status 200")
+		_, err := srv.packetConn.WriteTo([]byte("200\r\n"), packet.Addr)
+		if err != nil {
+			log.Println("Failed to send response status 200")
+		}
+
+		// Assign sensor address to server
+		srv.sensAddr = packet.Addr
+		// Timer starts here
+		srv.timer.Reset(7 * time.Second)
+		return
+	}
+
+	// Request decode
+	switch req[:5] {
+	case "ALIVE":
 		log.Println("Resetting timer")
 		srv.timer.Reset(7 * time.Second)
+	case "HUMID":
+		srv.buffer = append(srv.buffer, req[5:])
+		if len(srv.buffer) == 10 {
+			// TODO: Send the buffer to the server
+			log.Println(srv.buffer)
+			// Clear the slice, keep the allocated memory
+			srv.buffer = srv.buffer[:0]
+		}
 	}
 }
 
-// TODO: add handshake
 func (srv *UDPServer) Run() {
 	var err error
 	// Listen UDP packets
@@ -220,29 +259,6 @@ func (srv *UDPServer) Run() {
 		select {
 		// Received a request
 		case packet := <-packetChan:
-			// Initial request set up
-			// Handshake
-			if srv.sensAddr == nil {
-				if req := string(packet.Body[:packet.Len]); req != "REQUEST TRANSMISSION" {
-					log.Printf("Expected handshake, got: %s. Sending response status 400", req)
-					_, err := srv.packetConn.WriteTo([]byte("400\r\n"), packet.Addr)
-					if err != nil {
-						log.Println("Failed to send response status 400")
-					}
-					continue
-				}
-
-				log.Println("Handshake successful, sending response status 200")
-				_, err := srv.packetConn.WriteTo([]byte("200\r\n"), packet.Addr)
-				if err != nil {
-					log.Println("Failedto send response status 200")
-				}
-
-				// Assign sensor address to server
-				srv.sensAddr = packet.Addr
-				// Timer starts here
-				srv.timer.Reset(7 * time.Second)
-			}
 			log.Println("Received a UDP packet:", string(packet.Body[:packet.Len]))
 			srv.processPacket(packet)
 		// An error occured during processing request
@@ -253,7 +269,7 @@ func (srv *UDPServer) Run() {
 		case <-srv.timer.C:
 			// I don't know if this check is necessary
 			if srv.sensAddr != nil {
-				log.Println("Humidty sensor down")
+				log.Println("Humidity sensor down")
 				// Reset for the next inital set up
 				srv.sensAddr = nil
 			}
