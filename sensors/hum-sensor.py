@@ -43,7 +43,7 @@ def send_humidity_data(sock):
 
                     # Send information if humidity exceeds 80
                     if humidity_value > 80:
-                        message = f"HUMID {humidity_value}\r\n"
+                        message = f"HUMID {int(time.time())}:{humidity_value}\r\n"
                         sock.sendto(message.encode(), (UDP_HOST, UDP_PORT))
                         print(f"Sent --> {message}")
 

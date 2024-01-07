@@ -7,6 +7,8 @@ import (
 	"io"
 	"log"
 	"net"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -22,6 +24,8 @@ type UDPServer struct {
 	packetConn net.PacketConn
 	timer      *time.Timer
 	buffer     []string
+	srvConn    net.Conn
+	mu         sync.Mutex
 }
 
 type udpPacket struct {
@@ -34,7 +38,8 @@ type TCPServer struct {
 	Port     string
 	sensConn net.Conn
 	buffer   []string
-	// server connection
+	srvConn  net.Conn
+	mu       sync.Mutex
 }
 
 type tcpPacket []byte
@@ -93,13 +98,21 @@ func (srv *TCPServer) processPacket(packet tcpPacket) {
 	}
 
 	// Critical
+	srv.mu.Lock()
 	srv.buffer = append(srv.buffer, req[5:])
 	if len(srv.buffer) == 10 {
 		// TODO: Send the buffer to the server
-		log.Println(srv.buffer)
+		msg := []byte("TEMP " + strings.Join(srv.buffer, " "))
+		_, err := srv.srvConn.Write(msg)
+		if err != nil {
+			log.Println("Temperature buffer failed to send:", err)
+		} else {
+			log.Println("Temperature buffer sent to the server")
+		}
 		// Clear the slice, keep the allocated memory
 		srv.buffer = srv.buffer[:0]
 	}
+	srv.mu.Unlock()
 
 	srv.sendResponse(200, req)
 }
@@ -111,8 +124,14 @@ func (srv *TCPServer) Run() {
 		log.Fatal("Failed to create TCP listener:", err)
 	}
 
+	srv.srvConn, err = net.Dial("tcp", ":14673")
+	if err != nil {
+		log.Fatal("Failed to connect to the server:", err)
+	}
+
 	// Close the listener and connection if not closed
 	defer func() {
+		srv.srvConn.Close()
 		ln.Close()
 		if srv.sensConn != nil {
 			srv.sensConn.Close()
@@ -218,13 +237,21 @@ func (srv *UDPServer) processPacket(packet *udpPacket) {
 		log.Println("Resetting timer")
 		srv.timer.Reset(7 * time.Second)
 	case "HUMID":
+		srv.mu.Lock()
 		srv.buffer = append(srv.buffer, req[5:])
 		if len(srv.buffer) == 10 {
 			// TODO: Send the buffer to the server
-			log.Println(srv.buffer)
+			msg := []byte("HMDT " + strings.Join(srv.buffer, " "))
+			_, err := srv.srvConn.Write(msg)
+			if err != nil {
+				log.Println("Humidity buffer failed to send:", err)
+			} else {
+				log.Println("Humidity buffer sent to the server")
+			}
 			// Clear the slice, keep the allocated memory
 			srv.buffer = srv.buffer[:0]
 		}
+		srv.mu.Unlock()
 	}
 }
 
@@ -236,8 +263,14 @@ func (srv *UDPServer) Run() {
 		log.Fatal("Failed to create UDP listener")
 	}
 
+	srv.srvConn, err = net.Dial("tcp", ":14673")
+	if err != nil {
+		log.Fatal("Failed to connect to the server:", err)
+	}
+
 	// Close UDP server
 	defer func() {
+		srv.srvConn.Close()
 		srv.packetConn.Close()
 		// To terminate `receivePackets` goroutine
 		srv.packetConn = nil
