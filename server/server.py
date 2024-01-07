@@ -56,39 +56,23 @@ def sensor():
 
 def http():
     with db_conn() as db:
-        # Get socket file descriptor as a TCP socket using the IPv4 address family
-        listener_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        # Set some modes on the socket, not required but it's nice for our uses
-        listener_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        addr = ("127.0.0.1", 8080)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(addr)
+        sock.listen(1)
+        print(f"HTTP Server running at {addr}")
 
-        address_port = ("127.0.0.1", 8080)
-        # leserve address and port
-        listener_socket.bind(address_port)
-        # listen for connections, a maximum of 1
-        listener_socket.listen(1)
-        print("Server listening @ 127.0.0.1:8080")
-
-        # loop indefinitely to continuously check for new connections
         while True:
-            # Poll the socket to see if there are any newly written data, note excess data dumped to "_" variables
-            read_ready_sockets, _, _ = select.select(
-                [listener_socket],  # list of items we want to check for read-readiness (just our socket)
-                [],  # list of items we want to check for write-readiness (not interested)
-                [],  # list of items we want to check for "exceptional" conditions (also not interested)
-                0  # timeout of 0 seconds, makes the method call non-blocking
-            )
-            # if a value was returned here then we have a connection to read from
-            if read_ready_sockets:
-                # select.select() returns a list of readable objects, so we'll iterate, but we only expect a single item
-                for ready_socket in read_ready_sockets:
-                    # accept the connection from the client and get its socket object and address
-                    client_socket, client_address = ready_socket.accept()
+            ready, _, _ = select.select([sock], [], [], 0)
 
-                    raw = client_socket.recv(4096)
+            if ready:
+                for ready_sock in ready:
+                    csock, caddr = ready_sock.accept()
+                    raw = csock.recv(4096)
                     method, path = parse_request(raw.decode())
 
                     if method == 'GET' and (path == '/temperature' or path == '/humidity'):
-                        # Send a response to the client, notice it is a byte string
                         cursor = db.cursor()
                         result = cursor.execute(f"SELECT * FROM {path[1:]} ORDER BY time DESC")
                         client_socket.sendall(ok(result.fetchall()))
@@ -96,10 +80,8 @@ def http():
                         client_socket.sendall(not_found())
 
                     try:
-                        # close the connection
                         client_socket.close()
                     except OSError:
-                        # client disconnected first, nothing to do
                         pass
 
 
