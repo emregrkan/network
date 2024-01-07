@@ -5,7 +5,11 @@ import re
 import json
 import sys
 from multiprocessing import Process
+from datetime import datetime
 
+
+def convert_to_datetime(timestamp):
+    return datetime.fromtimestamp(timestamp)
 
 def db_conn():
     db = sqlite3.connect("server.db")
@@ -13,10 +17,8 @@ def db_conn():
     return db
 
 
-def ok(body):
-    parsed = json.dumps(body)
-    return f"HTTP/1.1 200 OK\r\nContent-Length: {len(parsed)}\r\nContent-Type: application/json\r\n\r\n{parsed}\r\n".encode()
-
+def ok(body, content_type="text/html"):
+    return f"HTTP/1.1 200 OK\r\nContent-Length: {len(body)}\r\nContent-Type: {content_type}\r\n\r\n{body}\r\n".encode()
 
 def not_found():
     return "HTTP/1.1 404 Not Found\r\nContent-Length: 13\r\nContent-Type: text/plain\r\n\r\n404 Not Found\r\n".encode()
@@ -68,14 +70,22 @@ def http():
 
             if ready:
                 for ready_sock in ready:
-                    csock, caddr = ready_sock.accept()
-                    raw = csock.recv(4096)
+                    client_socket, _ = ready_sock.accept()
+                    raw = client_socket.recv(4096)
                     method, path = parse_request(raw.decode())
 
                     if method == 'GET' and (path == '/temperature' or path == '/humidity'):
                         cursor = db.cursor()
                         result = cursor.execute(f"SELECT * FROM {path[1:]} ORDER BY time DESC")
-                        client_socket.sendall(ok(result.fetchall()))
+                        rows = result.fetchall()
+                        table_html = "<table border='1'><tr><th>Time</th><th>Value</th></tr>"
+
+                        for row in rows:
+                            datetime_obj = convert_to_datetime(row['time'])
+                            table_html += f"<tr><td>{datetime_obj}</td><td>{row['value']}</td></tr>"
+
+                        table_html += "</table>"
+                        client_socket.sendall(ok(table_html, content_type="text/html"))
                     else:
                         client_socket.sendall(not_found())
 
